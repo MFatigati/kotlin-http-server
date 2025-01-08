@@ -12,7 +12,7 @@ fun main() {
 
         serverSocket.accept().use {
             val writer = PrintWriter(it.getOutputStream(), true)
-            val response = "HTTP/1.1 200 OK\r\n\r\n"
+            val response = "HTTP/1.1 200 OK\r\n\r\n".toByteArray()
             writer.println(response)
             writer.flush()
             writer.close()
