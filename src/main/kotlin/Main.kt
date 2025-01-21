@@ -14,8 +14,6 @@ val echoPathRegex = Regex("/echo/\\w+")
 
 val filePathRegex = Regex("/files/\\w+")
 
-val fileNameRegex = Regex("/([^/]+)$")
-
 val userAgentPathRegex = Regex("/user-agent")
 
 val userAgentHeaderRegex = Regex("User-Agent.*")
