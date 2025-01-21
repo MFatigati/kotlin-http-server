@@ -22,7 +22,7 @@ val userAgentHeaderRegex = Regex("User-Agent.*")
 
 fun getFilePath(argsMap: Map<String, String>, path: String): Path {
     val directoryFlag = argsMap["--directory"]
-    val fileName = fileNameRegex.find(path)?.value?.removePrefix("/")
+    val fileName = path.substringAfter("/files/")
     val filePathString = directoryFlag + fileName
     return Path(filePathString)
 }
