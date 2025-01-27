@@ -19,6 +19,8 @@ val userAgentPathRegex = Regex("/user-agent")
 
 val userAgentHeaderRegex = Regex("User-Agent.*")
 
+val supportedCompressionTypes = arrayListOf<String>("gzip")
+
 fun getFilePath(argsMap: Map<String, String>, path: String): Path {
     val directoryFlag = argsMap["--directory"]
     val fileName = path.substringAfter("/files/")
@@ -30,15 +32,7 @@ fun getEchoPathString(path: String): String {
     return path.split("/")[2]
 }
 
-fun getPostRequestBody(reader: BufferedReader, ): String {
-    var line: String?
-    val lines = mutableListOf<String>()
-    while (true) {
-        line = reader.readLine()
-        println(line)
-        if (line.isNullOrEmpty()) break
-        lines.add(line)
-    }
+fun getPostRequestBody(reader: BufferedReader, lines: MutableList<String>): String {
     val contentLength = lines.find { it.startsWith("Content-Length:") }
         ?.split(":")
         ?.get(1)
@@ -50,6 +44,15 @@ fun getPostRequestBody(reader: BufferedReader, ): String {
     }
     return String(bodyReceiver)
 }
+
+fun createHttpResponse(
+    statusLine: String,
+    headers: Map<String, String>,
+    body: String
+): String {
+    val headersString = headers.entries.joinToString("\r\n") { "${it.key}: ${it.value}" }
+    return "$statusLine\r\n$headersString\r\n\r\n$body"
+}
 suspend fun handleRequest(socket: Socket, argsMap: Map<String, String>) {
         socket.use {
             val reader = BufferedReader(InputStreamReader(it.getInputStream()))
@@ -59,27 +62,44 @@ suspend fun handleRequest(socket: Socket, argsMap: Map<String, String>) {
             val method = requestPath.split(" ")[0]
             val writer = PrintWriter(it.getOutputStream(), true)
             var response = ""
+            val lines = mutableListOf<String>()
+            while (true) {
+                var line: String? = reader.readLine()
+                if (line.isNullOrEmpty()) break
+                lines.add(line)
+            }
+
+            var statusLine = "HTTP/1.1 200 OK"
+            val headers = mutableMapOf<String, String>()
+            var body = ""
+
+            val desiredCompressionScheme = lines.find { it.startsWith("Accept-Encoding:") }
+                ?.split(":")
+                ?.get(1)
+                ?.trim()
+
+            if (desiredCompressionScheme?.isNotBlank() == true && supportedCompressionTypes.contains(desiredCompressionScheme)) {
+                headers["Content-Encoding"] = desiredCompressionScheme
+            }
 
             if (path == "/") {
-                response = "HTTP/1.1 200 OK\r\n\r\n"
+                statusLine = "HTTP/1.1 200 OK"
             } else if (echoPathRegex.matches(path)) {
                 val echoString = getEchoPathString(path)
                 val contentLength = echoString.length
-                response =
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: $contentLength\r\n\r\n$echoString"
+                headers["Content-Type"] = "text/plain"
+                headers["Content-Length"] = contentLength.toString()
+                body = echoString
             } else if (userAgentPathRegex.matches(path)) {
-                while (true) {
-                    val lines = mutableListOf<String>()
-                    var line: String? = reader.readLine()
-                    if (line.isNullOrEmpty()) break
+                for (line in lines) {
                     if (userAgentHeaderRegex.matches(line)) {
                         userAgent = line.split(" ")[1]
                     }
-                    lines.add(line)
                 }
                 val userAgentLength = userAgent.length
-                response =
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: $userAgentLength\r\n\r\n$userAgent"
+                headers["Content-Length"] = userAgentLength.toString()
+                headers["Content-Type"] = "text/plain"
+                body = userAgent
             } else if (filePathRegex.matches(path)) {
                 when (method) {
                     "GET" -> {
@@ -87,28 +107,31 @@ suspend fun handleRequest(socket: Socket, argsMap: Map<String, String>) {
                         if (filePath.exists()) {
                             val fileByteLength = filePath.fileSize()
                             val fileContent = Files.readString(filePath)
-                            response = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: $fileByteLength\r\n\r\n${fileContent}"
+                            headers["Content-Type"] = "application/octet-stream"
+                            headers["Content-Length"] = fileByteLength.toString()
+                            body = fileContent
                         } else {
-                            response = "HTTP/1.1 404 Not Found\r\n\r\n"
+                            statusLine = "HTTP/1.1 404 Not Found"
                         }
                     }
                     "POST" -> {
-                        val body = getPostRequestBody(reader)
+                        val body = getPostRequestBody(reader, lines)
                         val filePath = getFilePath(argsMap, path).toString()
                         val file = File(filePath)
                         if (file.exists()) {
-                            response = "HTTP/1.1 409 Conflict\r\n\r\n"
+                            statusLine = "HTTP/1.1 409 Conflict"
                         } else {
                             file.createNewFile()
                             file.appendText(body)
                             println("File created: $filePath")
-                            response = "HTTP/1.1 201 Created\r\n\r\n"
+                            statusLine = "HTTP/1.1 201 Created"
                         }
                     }
                 }
             } else {
-                response = "HTTP/1.1 404 Not Found\r\n\r\n"
+                statusLine = "HTTP/1.1 404 Not Found"
             }
+            response = createHttpResponse(statusLine, headers, body)
             writer.println(response)
             writer.flush()
             writer.close()
