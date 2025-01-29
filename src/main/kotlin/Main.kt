@@ -1,15 +1,14 @@
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.io.PrintWriter
 import java.net.ServerSocket;
 import java.net.Socket
 import kotlinx.coroutines.*
-import java.io.File
+import java.io.*
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.Path
 import kotlin.io.path.exists
 import kotlin.io.path.fileSize
+import java.util.zip.GZIPOutputStream
+import java.nio.charset.StandardCharsets.UTF_8
 
 val echoPathRegex = Regex("/echo/\\w+")
 
@@ -48,13 +47,17 @@ fun getPostRequestBody(reader: BufferedReader, lines: MutableList<String>): Stri
 fun createHttpResponse(
     statusLine: String,
     headers: Map<String, String>,
-    body: String
-): String {
+    body: String,
+    compressedBody: ByteArray?
+): Any {
     val headersString = headers.entries.joinToString("\r\n") { "${it.key}: ${it.value}" }
+    if (compressedBody?.isNotEmpty() == true) {
+        return "$statusLine\r\n$headersString\r\n\r\n".toByteArray(Charsets.US_ASCII) + compressedBody
+    }
     return "$statusLine\r\n$headersString\r\n\r\n$body"
 }
 
-fun useCompressionMiddleware(lines: MutableList<String>, headers: MutableMap<String, String>) {
+fun useCompressionHeaderMiddleware(lines: MutableList<String>, headers: MutableMap<String, String>) {
     val desiredCompressionSchemes = lines.find { it.startsWith("Accept-Encoding:") }
         ?.split(":", ",")
         ?.drop(1)
@@ -67,6 +70,13 @@ fun useCompressionMiddleware(lines: MutableList<String>, headers: MutableMap<Str
         }
     }
 }
+
+fun useCompressionBodyMiddleware(content: String): ByteArray {
+    val bos = ByteArrayOutputStream()
+    GZIPOutputStream(bos).bufferedWriter(UTF_8).use { it.write(content) }
+    return bos.toByteArray()
+}
+
 suspend fun handleRequest(socket: Socket, argsMap: Map<String, String>) {
         socket.use {
             val reader = BufferedReader(InputStreamReader(it.getInputStream()))
@@ -74,8 +84,9 @@ suspend fun handleRequest(socket: Socket, argsMap: Map<String, String>) {
             var userAgent = ""
             val path = requestPath.split(" ")[1]
             val method = requestPath.split(" ")[0]
+            val outputStream = BufferedOutputStream(it.getOutputStream()) // Handle binary responses
             val writer = PrintWriter(it.getOutputStream(), true)
-            var response = ""
+            var response: Any = ""
             val lines = mutableListOf<String>()
             while (true) {
                 var line: String? = reader.readLine()
@@ -86,8 +97,9 @@ suspend fun handleRequest(socket: Socket, argsMap: Map<String, String>) {
             var statusLine = "HTTP/1.1 200 OK"
             val headers = mutableMapOf<String, String>()
             var body = ""
+            var compressedBody: ByteArray? = null
 
-            useCompressionMiddleware(lines, headers)
+            useCompressionHeaderMiddleware(lines, headers)
 
             if (path == "/") {
                 statusLine = "HTTP/1.1 200 OK"
@@ -97,6 +109,10 @@ suspend fun handleRequest(socket: Socket, argsMap: Map<String, String>) {
                 headers["Content-Type"] = "text/plain"
                 headers["Content-Length"] = contentLength.toString()
                 body = echoString
+                if (headers["Content-Encoding"].equals("gzip")) {
+                    compressedBody = useCompressionBodyMiddleware(echoString)
+                    headers["Content-Length"] = compressedBody.size.toString()
+                }
             } else if (userAgentPathRegex.matches(path)) {
                 for (line in lines) {
                     if (userAgentHeaderRegex.matches(line)) {
@@ -138,9 +154,17 @@ suspend fun handleRequest(socket: Socket, argsMap: Map<String, String>) {
             } else {
                 statusLine = "HTTP/1.1 404 Not Found"
             }
-            response = createHttpResponse(statusLine, headers, body)
-            writer.println(response)
-            writer.flush()
+            response = createHttpResponse(statusLine, headers, body, compressedBody)
+            when (response) {
+                is ByteArray -> {
+                    outputStream.write(response)
+                    outputStream.flush()
+                }
+                is String -> {
+                    writer.write(response)
+                    writer.flush()
+                }
+            }
             writer.close()
         }
 }
