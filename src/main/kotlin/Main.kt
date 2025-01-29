@@ -53,6 +53,20 @@ fun createHttpResponse(
     val headersString = headers.entries.joinToString("\r\n") { "${it.key}: ${it.value}" }
     return "$statusLine\r\n$headersString\r\n\r\n$body"
 }
+
+fun useCompressionMiddleware(lines: MutableList<String>, headers: MutableMap<String, String>) {
+    val desiredCompressionSchemes = lines.find { it.startsWith("Accept-Encoding:") }
+        ?.split(":", ",")
+        ?.drop(1)
+
+    if (!desiredCompressionSchemes.isNullOrEmpty()) {
+        for (desiredComp in desiredCompressionSchemes) {
+            if (supportedCompressionTypes.contains(desiredComp.trim())) {
+                headers["Content-Encoding"] = desiredComp.trim()
+            }
+        }
+    }
+}
 suspend fun handleRequest(socket: Socket, argsMap: Map<String, String>) {
         socket.use {
             val reader = BufferedReader(InputStreamReader(it.getInputStream()))
@@ -73,14 +87,7 @@ suspend fun handleRequest(socket: Socket, argsMap: Map<String, String>) {
             val headers = mutableMapOf<String, String>()
             var body = ""
 
-            val desiredCompressionScheme = lines.find { it.startsWith("Accept-Encoding:") }
-                ?.split(":")
-                ?.get(1)
-                ?.trim()
-
-            if (desiredCompressionScheme?.isNotBlank() == true && supportedCompressionTypes.contains(desiredCompressionScheme)) {
-                headers["Content-Encoding"] = desiredCompressionScheme
-            }
+            useCompressionMiddleware(lines, headers)
 
             if (path == "/") {
                 statusLine = "HTTP/1.1 200 OK"
